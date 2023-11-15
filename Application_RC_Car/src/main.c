@@ -37,12 +37,11 @@ void ManualMode(void *parms);
 void IRMode_Selection(void*y);
 void IRMode_Left(void*z);
 /*************************************Global variables can be accessed by all tasks***************************/
-uint8 Local_u8Mode;
-uint8 u8flag_1=0;
-uint8 u8flag_2=0;
-uint8 u8state=1;
-uint8 u8IRLeft=0;
-uint8 u8IRRight=0;
+uint8 Local_u8Mode; /*Global variable holds the value of mode received by UART accessed by TaskModeOption */
+uint8 Local_u8direction=0; /*Global variable hold the options of manual mode whether F or R, etc.. and also indicate the switch to task IR*/
+uint8 u8flag_1=1; /*Flag for manual mode*/
+uint8 u8IRLeft=0; /*Global variable holds the value of IR left sensor*/
+uint8 u8IRRight=0; /*Global variable holds the value of IR right sensor*/
 
 /**************************************************Main*****************************************************/
 
@@ -84,11 +83,10 @@ int main(void)
 	/**********************************************Task Creation********************************************/
 	xTaskCreate(TaskModeOption, "choose mode1 or mode2", 128 , NULL, 1, VtaskOptionMode);
 	xTaskCreate(ManualMode, "mode 1_manual", 128 , NULL, 2, VtaskManualMode);
-	xTaskCreate(IRMode_Selection, "Task to read input of IR", 128 , NULL, 3, VtaskIRMode_select);
+	xTaskCreate(IRMode_Selection, "Task to read input of IR", 128 , NULL, 2, VtaskIRMode_select);
 	xTaskCreate(IRMode_Left, "IR left", 128 , NULL, 2, VtaskIRMode_Left);
 	/**********************************************Semaphore Creation****************************************/
 	xsemaphore_1=xSemaphoreCreateBinary();
-	xsemaphore_2=xSemaphoreCreateBinary();
 	xsemaphore_3=xSemaphoreCreateBinary();
 
 	/*To call the scheduler to start*/
@@ -105,20 +103,13 @@ void IRMode_Left(void*z)
 {
 	while(1)
 	{
-		/*Take semaphore 2 when the mode is line follower mode*/
-		xSemaphoreTake(xsemaphore_2,(TickType_t) portMAX_DELAY);
-		/*Take semaphore 3 when IR left sensor detects a signal whil IR right signal doesn't detect*/
+		/*Take semaphore 3 when IR left sensor detects a signal while IR right signal doesn't detect*/
 		xSemaphoreTake(xsemaphore_3,(TickType_t) portMAX_DELAY);
 		/*function responsible to make PA4 and PA7 high */
 		DcMotor_voidTurnLeft();
 
 		u8IRLeft=0;
 		u8IRRight=0;
-		/*Give semaphore while the mode is Line follower mode and no switch to manual mode*/
-		if(u8flag_2==0)
-		{
-			xSemaphoreGive(xsemaphore_2);
-		}
 
 		vTaskDelay(40);
 	}
@@ -128,56 +119,58 @@ void IRMode_Left(void*z)
 /*Task responsible to detect the value of both IR sensors and also takes action according to this value*/
 void IRMode_Selection(void*y)
 {
+
 	while(1)
 	{
-		/*block Line follower mode unless there is a switch from manual mode to line follower
-		 * when in manual mode, u8flag_1=0 so this condition will not execute which results in blocking
-		 * line follower mode in case manual mode*/
-		if(u8flag_1==1)
-		{
-			MGPIO_writePin(PORTB,PIN13,HIGH);
 			/*Read the value of IR left sensor*/
 			MGPIO_readPin(PORTA,PIN8,&u8IRLeft);
 			/*Read the value of IR right sensor*/
 			MGPIO_readPin(PORTB,PIN14,&u8IRRight);
+			/* block Line follower mode unless there is a switch from manual mode to line follower
+			 * when in manual mode, u8flag_1=0 so this condition will not execute which results in blocking
+			 * line follower mode in case manual mode.
+			 * at the begginning line follower mode can start as Local_u8Mode will be y and flag_1 will be 1 and then the switch from manual to lien follower
+			 * will occur accroding to the logic and condition
+			 * */
+			if(u8flag_1==1 && (Local_u8direction=='y'||Local_u8Mode=='y' ))
+			{
+				if(u8IRLeft==1 && u8IRRight==1 )
+				{
+					DcMotor_voidReverse(); /*Make PA5 and PA7 HIGH*/
+				}
+				/*If IR left sensor decets HIGH and IR right sensor detects LOW*/
+				else if(u8IRLeft==1 && u8IRRight==0)
+				{
+					DcMotor_voidTurnRight();       /*Make PA6 and PA5 HIGH*/
 
-			if(u8IRLeft==1 && u8IRRight==1 )
-			{
-				DcMotor_voidReverse(); /*Make PA4 and PA6 HIGH*/
-			}
-			/*If IR left sensor decets HIGH and IR right sensor detects LOW*/
-			if(u8IRLeft==1 && u8IRRight==0)
-			{
-				DcMotor_voidTurnRight();       /*Make PA6 and PA5 HIGH*/
+				}
+				/*If IR left sensor decets LOW and IR right sensor detects LOW*/
+				else if(u8IRLeft==0 && u8IRRight==0)
+				{
+					DcMotor_voidStop();             /*Make all pins LOW*/
+				}
+				/*If IR left sensor decets LOW and IR right sensor detects HIGH*/
+				else if(u8IRLeft==0 && u8IRRight==1)
+				{
+					xSemaphoreGive(xsemaphore_3);    /*Give semaphore and activate IRMode_Left task*/
+				}
 
 			}
-			/*If IR left sensor decets LOW and IR right sensor detects LOW*/
-			if(u8IRLeft==0 && u8IRRight==0)
-			{
-				DcMotor_voidStop();             /*Make all pins LOW*/
+			vTaskDelay(35);
 			}
-			/*If IR left sensor decets LOW and IR right sensor detects HIGH*/
-			if(u8IRLeft==0 && u8IRRight==1)
-			{
-				xSemaphoreGive(xsemaphore_3);    /*Give semaphore and activate IRMode_Left task*/
-			}
-			/*If IR left sensor decets HIGH and IR right sensor detects HIGH*/
 
-		}
-		vTaskDelay(35);
 	}
-}
 
+/*Task responsible for manual mode and take action according to the value of the variable received by UART whether forward, backward, right, left*/
 void ManualMode(void *parms)
 {
-	uint8 Local_u8direction=0;
 
 	while(1)
 	{
 		/*Take semaphore 1 when its a manual mode*/
 		xSemaphoreTake(xsemaphore_1,(TickType_t) portMAX_DELAY);
-		MGPIO_writePin(PORTB,PIN13,LOW);
 		DcMotor_voidStop();
+
 		while(Local_u8Mode=='x' || Local_u8Mode=='X')
 		{
 			MGPIO_writePin(PORTC,PIN15,HIGH); // Indicator led//
@@ -188,7 +181,7 @@ void ManualMode(void *parms)
 			/*f --> forward direction*/
 			if (Local_u8direction=='B'||Local_u8direction=='b')
 			{
-				DcMotor_voidForward();      /*Make PA4 and PA6 HIGH*/
+				DcMotor_voidReverse();      /*Make PA4 and PA6 HIGH*/
 			}
 			/* R --> Right direction*/
 			else if (Local_u8direction=='R'||Local_u8direction=='r')
@@ -210,7 +203,7 @@ void ManualMode(void *parms)
 			/* G--> Reverse direction*/
 			else if (Local_u8direction=='F'||Local_u8direction=='f')
 			{
-				DcMotor_voidReverse();    /*Make PA5 and PA7 HIGH*/
+				DcMotor_voidForward();    /*Make PA5 and PA7 HIGH*/
 			}
 			/* S--> Stop Car*/
 			else if (Local_u8direction=='S'||Local_u8direction=='s')
@@ -223,9 +216,7 @@ void ManualMode(void *parms)
 			else if (Local_u8direction == 'Y'||Local_u8direction == 'y')
 			{
 				DcMotor_voidStop();
-				u8flag_1=1;/* To not give semaphore_1 and block manual mode if line follower mode is activated */
-				u8flag_2=0;
-				xSemaphoreGive(xsemaphore_2); /*Give semaphore 2 to activate line follower mode*/
+				u8flag_1=1; /* To not give semaphore_1 and block manual mode if line follower mode is activated */
 				break;
 			}
 		}
@@ -235,9 +226,10 @@ void ManualMode(void *parms)
 			xSemaphoreGive(xsemaphore_1);
 		}
 
-		vTaskDelay(50);
+		vTaskDelay(40);
 	}
 }
+
 /*Task which executes to take the value of the mode whether manual mode or line follower mode
  * and give the semaphore according to the mode*/
 void TaskModeOption(void*x)
@@ -252,6 +244,7 @@ void TaskModeOption(void*x)
 			xSemaphoreGive(xsemaphore_1);
 			MGPIO_writePin(PORTC,PIN13,LOW);
 		}
+
 		/*Y indicates for manual mode */
 		if(Local_u8Mode=='Y'||Local_u8Mode=='y')
 		{
